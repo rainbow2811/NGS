@@ -1,0 +1,58 @@
+#1.trimming
+/BiO/apps/sickle/sickle pe -t sanger -g -f NA12878_1.fastq.gz -r NA12878_2.fastq.gz -o N A12878-trimmed_1.fastq.gz -p NA12878-trimmed_2.fastq.gz -s NA12878-trimmed_3.fastq.gz
+
+#2.Alignment & BAM sorting(Mapping to reference)
+/BiO/apps/bwa-0.7.17/bwa mem -t 2 -M -R "@RG\tID:BioEdu\tSM:NA12878\tPL:illumina\tLB:WES " /BiO/data/reference/hg19_partial.fasta NA12878-trimmed_1.fastq.gz NA12878-trimmed_2.fastq.gz | /BiO/apps/samtools/s amtools view -bS -q 20 - | /BiO/apps/samtools/samtools sort -m 4000000000 -o NA12878.sorted.bam
+
+#3. copy the sorted bam file
+cp /BiO/data/example/NA12878.sorted.bam . 
+
+#4.Remove duplicates
+java -Xmx4g -jar /BiO/apps/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar MarkDuplicates -I  NA12878.sorted.bam -O NA12878.rmdup.bam -M NA12878.rmdup.metrics --REMOVE_DUPLICATES=true
+
+#5. Producing index file of bam removed duplicates
+/BiO/apps/samtools/samtools index NA12878.rmdup.bam
+
+
+#6.BQSR
+java -Xmx4g -jar /BiO/apps/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar BaseRecalibrator -R /BiO/data/reference/hg19.fasta -I NA12878.rmdup.bam -L /BiO/data/target/target.bed --known-sites /BiO/data/DB/dbSnp151_chr.vcf.gz --known-sites /BiO/data/DB/Mills_and_1000G_gold_standard.indels.hg19.vcf.gz -O NA12878_recal_data.table
+
+#7.Apply BQSR
+java -Xmx4g -jar /BiO/apps/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar ApplyBQSR -bqsr NA12878_recal_data.table -I NA12878.rmdup.bam -O NA12878.recal.bam
+
+#8.On-target coverage
+java -Xmx4g -jar /BiO/apps/GenomeAnalysisTK-3.5/GenomeAnalysisTK.jar -T DepthOfCoverage -R /BiO/data/reference/hg19.fasta -I NA12878.recal.bam -o NA12878_target_cov -ct 1 -ct 5 -ct 10 -ct 20 -ct 30 -omitBaseOutput -L /BiO/data/target/target.bed
+
+
+#9.Remove off-target reads
+bedtools intersect -wa -a NA12878.recal.bam -b /BiO/data/target/target.bed > NA12878.target.bam
+
+/BiO/apps/samtools/samtools index NA12878.target.bam
+
+# 10.Variant calling - GATK HaplotypeCaller
+java -Xmx4g -jar /BiO/apps/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar HaplotypeCaller -R /BiO/data/reference/hg19.fasta -I NA12878.target.bam -O NA12878.gatk.vcf
+
+bgzip NA12878.gatk.vcf
+
+tabix -p vcf NA12878.gatk.vcf.gz
+
+# 11. Variant calling - samtools (bcftools)
+/BiO/apps/bcftools/bcftools mpileup -f /BiO/data/reference/hg19.fasta NA12878.target.bam  | /BiO/apps/bcftools/bcftools call -mv -Ov -o NA12878.samt.vcf
+
+bgzip NA12878.samt.vcf
+tabix -p vcf NA12878.samt.vcf.gz
+
+#12.consensus VCF
+vcf-isec -o -n +2 NA12878.gatk.vcf.gz NA12878.samt.vcf.gz > NA12878.consensus.vcf
+
+# Filtration
+java -jar /BiO/apps/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar VariantFiltration -R /BiO/data/reference/hg19.fasta -O NA12878.consensus.filt.vcf --variant NA12878.consensus.vcf --filter-expression 'DP < 10 || FS > 60.0' --filter-name 'LOWQUAL'
+
+# Remove 'LOWQUAL' in filter column
+cat NA12878.consensus.filt.vcf | awk -F '\t' '($7!="LOWQUAL"){print}' | bgzip > NA12878.final.vcf.gz
+
+tabix -p vcf NA12878.final.vcf.gz
+
+
+
+
